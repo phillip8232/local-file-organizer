@@ -12,7 +12,7 @@ It also sorts loose files into folders using simple rules. It shows you everythi
 
 It's free and runs entirely on your computer, with no cloud, no account and no telemetry. It works on Windows, macOS and Linux.
 
-> **About this project.** This is a personal tooling project for lazy people like me who'd rather click "approve" than sort 9,000 files by hand. It was designed and built with [Claude](https://claude.ai), Anthropic's AI assistant, using Claude Code. I reviewed, tested and published it. It's built to a professional standard (tested, documented, and careful with your files), but it's a hobby project, not a commercial product. See [Disclaimer](#disclaimer).
+> **About this project.** This is a personal tooling project for lazy people like me who'd rather click "approve" than sort 9,000 files by hand. It was designed and built with [Claude](https://claude.ai), Anthropic's AI assistant, using Claude Code. I reviewed, tested and published it. I didn't write this README either; Claude did that too. That's how lazy I am. I just want tools that exist for exactly this kind of reason. It's built to a professional standard (tested, documented, and careful with your files), but it's a hobby project, not a commercial product. See [Disclaimer](#disclaimer).
 
 ---
 
@@ -355,7 +355,7 @@ The review page is plain HTML, CSS and JavaScript embedded in the binary.
 
 ## Credits
 
-Designed and written with **[Claude](https://claude.ai)** by Anthropic, using Claude Code, as a tooling project. I directed it, reviewed it, tested it and published it. Ideas borrowed with thanks from [czkawka](https://github.com/qarmin/czkawka), [jdupes](https://codeberg.org/jbruchon/jdupes), [dupeGuru](https://github.com/arsenetar/dupeguru) and [organize](https://github.com/tfeldmann/organize).
+Designed and written with **[Claude](https://claude.ai)** by Anthropic, using Claude Code, as a tooling project. That includes the code, the tests and this README. I directed it, reviewed it, tested it and published it. Ideas borrowed with thanks from [czkawka](https://github.com/qarmin/czkawka), [jdupes](https://codeberg.org/jbruchon/jdupes), [dupeGuru](https://github.com/arsenetar/dupeguru) and [organize](https://github.com/tfeldmann/organize).
 
 Issues and pull requests are welcome.
 
