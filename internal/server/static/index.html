@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>File Organizer</title>
+<link rel="stylesheet" href="style.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <h1>File Organizer</h1>
+    <p id="status-line" class="muted">Loading…</p>
+  </div>
+  <div class="top-actions">
+    <span id="holding-pill" class="pill" hidden></span>
+    <button id="scan-btn" class="primary" type="button">Scan now</button>
+  </div>
+</header>
+
+<section id="scan-box" class="scan-box" hidden>
+  <div class="scan-row">
+    <span id="scan-text">Scanning…</span>
+    <button id="scan-cancel" type="button" class="link">Stop</button>
+  </div>
+  <div class="bar"><div id="scan-bar" class="bar-fill"></div></div>
+</section>
+
+<p id="error" class="error" role="alert" hidden></p>
+
+<nav class="tabs" role="tablist">
+  <button role="tab" data-tab="cleanup" aria-selected="true">Clean up</button>
+  <button role="tab" data-tab="sort" aria-selected="false">Sort</button>
+  <button role="tab" data-tab="history" aria-selected="false">History</button>
+  <button role="tab" data-tab="rules" aria-selected="false">Rules</button>
+</nav>
+
+<main>
+  <section id="tab-cleanup" class="panel">
+    <div class="panel-head">
+      <p class="muted">Finds duplicates, empty files and folders, stale partial downloads, old downloads and large files. Nothing changes until you approve.</p>
+      <button id="build-cleanup" type="button">Find things to clean up</button>
+    </div>
+    <div id="cleanup-summary" class="cards"></div>
+    <div id="cleanup-body"></div>
+  </section>
+
+  <section id="tab-sort" class="panel" hidden>
+    <div class="panel-head">
+      <p class="muted">Moves files into folders using your rules (Rules tab). Only files sitting directly in each folder are sorted unless a rule says otherwise.</p>
+      <button id="build-sort" type="button">Preview sorting</button>
+    </div>
+    <div id="sort-body"></div>
+  </section>
+
+  <section id="tab-history" class="panel" hidden>
+    <div id="holding-box" class="holding"></div>
+    <div id="history-body"></div>
+  </section>
+
+  <section id="tab-rules" class="panel" hidden>
+    <p class="muted">Rules are checked top to bottom; the first match wins. Saving only checks and stores them. Use the Sort tab to preview what they would move.</p>
+    <textarea id="rules-text" spellcheck="false" aria-label="Sort rules"></textarea>
+    <div class="row">
+      <button id="rules-save" type="button" class="primary">Save rules</button>
+      <span id="rules-msg" class="muted"></span>
+    </div>
+  </section>
+</main>
+
+<footer id="approve-bar" class="approve-bar" hidden>
+  <span id="approve-text"></span>
+  <button id="approve-btn" type="button" class="primary">Review and approve…</button>
+</footer>
+
+<dialog id="dialog">
+  <form method="dialog" class="dialog-inner">
+    <h2 id="dialog-title"></h2>
+    <div id="dialog-body"></div>
+    <div class="dialog-actions">
+      <button value="cancel" id="dialog-cancel" type="submit">Cancel</button>
+      <button value="ok" id="dialog-ok" class="primary" type="submit">OK</button>
+    </div>
+  </form>
+</dialog>
+</body>
+</html>
