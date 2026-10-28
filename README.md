@@ -8,7 +8,12 @@ Local File Organizer scans your folders and finds:
 - leftover partial downloads
 - forgotten old downloads
 
-It also sorts loose files into folders using simple rules. It shows you everything it wants to do first. Nothing moves or gets deleted until you approve it, and every batch can be undone.
+It also:
+- **sorts loose files to where they belong**: photos to Pictures, screen recordings to Videos, PDFs to Documents, and so on.
+- **renames files you didn't name yourself**: `IMG_20261021_113648.jpg` becomes `Photo 2026-10-21 11.36.48.jpg`, and `download (3).pdf` gets the title written inside the PDF.
+- **evens out space between your drives** by moving big folders you haven't used in a while.
+
+It shows you everything it wants to do first. Nothing moves, gets renamed or gets deleted until you approve it, and every batch can be undone.
 
 It's free and runs entirely on your computer, with no cloud, no account and no telemetry. It works on Windows, macOS and Linux.
 
@@ -23,7 +28,8 @@ It's free and runs entirely on your computer, with no cloud, no account and no t
 - [Quick start](#quick-start)
 - [The review page](#the-review-page)
 - [What it finds](#what-it-finds)
-- [Sorting with rules](#sorting-with-rules)
+- [Sorting and renaming](#sorting-and-renaming)
+- [Balancing drives](#balancing-drives)
 - [Settings](#settings)
 - [Undo, the holding area and the trash](#undo-the-holding-area-and-the-trash)
 - [Command line reference](#command-line-reference)
@@ -47,11 +53,16 @@ Deleting the wrong file is the main risk with any cleanup tool, so this one is b
 - **It never deletes your last copy.** Before removing a duplicate, it checks that the copy you're keeping still exists. It also confirms both files still have identical content, using a full BLAKE3 hash.
 - **It leaves alone things it shouldn't touch:**
   - **Project folders** are treated as one unit and never reorganised. A project folder is any folder containing `.git`, `package.json`, `go.mod`, `Cargo.toml`, `.sln`, `.claude`, a Rojo `default.project.json`, or similar.
+  - **App libraries and media projects** are treated as one unit too: Obsidian vaults, Steam libraries, Lightroom catalogs, Photos libraries, and folders holding Premiere, After Effects, DaVinci Resolve, Kdenlive, Vegas or Blender projects. Moving part of one would break its links.
+  - **Sensitive files and folders** are never indexed or touched. That's anything whose name contains "recovery code", "backup code", "password", "private key", "seed phrase", "wallet", `.ssh`, KeePass and similar. You can add your own names.
   - **System and app folders** are always protected: Windows, Program Files, AppData, `~/Library`, `/usr` and so on.
   - **Cloud/online-only files** from OneDrive or iCloud are never opened, so the tool never triggers a download.
   - **Symlinks and junctions** are never followed.
   - **Subfolders you made yourself** inside Downloads are never sorted or flagged as "old downloads". Only loose files are.
+- **Moves between drives are verified.** Every file is copied, read back and compared by hash before the original is removed. Free space is checked first.
+- **Names you chose are never changed.** Renaming only touches names a camera, phone, browser or app made up.
 - **Every action is journaled before it happens.** Even a crash or power cut mid-batch can be recovered and undone.
+- **Only one copy runs at a time** per data folder, so two windows can never edit the database at once. If the database is ever damaged, it's set aside and rebuilt automatically, keeping your undo history.
 - **The review page is private to your computer.** It listens on `127.0.0.1` only and needs a one-time link printed in your terminal.
 
 ---
@@ -107,10 +118,12 @@ On Windows, if you're in the same folder, type `.\organizer.exe ui`.
 
 Your browser opens the review page. Then:
 
-1. Click **Scan now**. It reads your Downloads, Desktop and Documents folders. Only the file list is read; contents are read only to compare possible duplicates. A rescan takes about a second.
+1. Click **Scan now**. It reads your Downloads, Desktop and Documents folders. Mostly only the file list is read; contents are read only to compare possible duplicates. A rescan takes about a second.
 2. On the **Clean up** tab, click **Find things to clean up**. Look through the sections, untick anything you want to keep, and choose which copy of each duplicate to keep.
 3. Click **Review and approve…**, read the summary, and confirm.
-4. Changed your mind? Open **History** and click **Undo** on that batch.
+4. On the **Sort** tab, click **Preview sorting** to see where loose files would go and what they'd be renamed to, then approve.
+5. On the **Drives** tab, click **Plan balancing** if one drive is much fuller than another.
+6. Changed your mind? Open **History** and click **Undo** on that batch.
 
 To stop the program, press **Ctrl+C** in the terminal.
 
@@ -121,7 +134,8 @@ To stop the program, press **Ctrl+C** in the terminal.
 | Tab | What it's for |
 |---|---|
 | **Clean up** | Duplicates, empty folders and files, junk, old downloads and large files, grouped and ticked by default where it's safe. |
-| **Sort** | A preview of where your rules would move loose files. Untick anything, then approve. |
+| **Sort** | A preview of where loose files would go and what auto-named files would be renamed to (new names in bold). Untick anything, then approve. |
+| **Drives** | Your drives' space now and after the ticked moves, plus suggested folders to move to even them out. |
 | **History** | Every batch you've approved, with **Undo** and a per-file log. Also shows what's in the holding area and lets you send old items to the trash now. |
 | **Rules** | Edit your sort rules in the browser. They're checked when you save. |
 
@@ -149,19 +163,62 @@ You can override this per group on the review page. You can also change the defa
 
 ---
 
-## Sorting with rules
+## Sorting and renaming
 
-Rules live in `rules.yaml`. Edit them in the **Rules** tab, or open the file directly; run `organizer where` to find it. Rules are checked top to bottom, and the first rule that matches a file wins.
+For each loose file, the organizer works out:
+- **what it is:** its type, checked from the file's contents when the extension is missing or unknown.
+- **what kind of file it is:** a **screenshot**, a **phone or camera** photo or video, or a **screen recording** (OBS-style `2026-06-26 13-43-59.mp4`).
+- **when it was really made:** the date a photo was taken (EXIF), or a date written in the name, or else when it was last modified.
 
-The defaults sort loose files in Downloads into `Images/<year>`, `Videos`, `Audio`, `Documents/<year>`, `Archives`, `Installers` and `3D`. Screenshots in Downloads and on the Desktop go to `Screenshots/<year>-<month>`.
+**Where files go by default:**
+
+| What | Where |
+|---|---|
+| Screenshots (Downloads, Desktop) | `Pictures\Screenshots\2026-10` |
+| Phone/camera photos | `Pictures\Camera\2026\10` |
+| Phone/camera videos | `Videos\Camera\2026\10` |
+| Screen recordings | `Videos\Recordings\2026-06` |
+| Other images, videos, music in Downloads | `Pictures\Downloaded\2026`, `Videos\Downloaded`, `Music\Downloaded` |
+| PDFs, documents | `Documents\PDFs\2026`, `Documents\Downloaded\2026` |
+| Spreadsheets, presentations, eBooks, 3D assets | `Documents\Spreadsheets`, `…\Presentations`, `…\eBooks`, `…\3D Assets` |
+| Archives, installers, fonts | stay in Downloads: `Downloads\Archives`, `…\Installers`, `…\Fonts` |
+
+**Renaming.** Files with names a device or app made up get a descriptive name. That covers:
+- camera and phone names: `IMG_1234`, `PXL_20261021_113648577`, `DSC01234`
+- chat app names: WhatsApp `IMG-20261021-WA0003`, `WhatsApp Image … at …`
+- screenshot and recording names
+- generic words with a number: `download (3)`, `image-1792888971177`, `Untitled`, `New Text Document`, `scan0001`
+- hashes, UUIDs and bare timestamps
+
+| Before | After |
+|---|---|
+| `PXL_20261021_113648577.MP.jpg` | `Photo 2026-10-21 11.36.48.jpg` |
+| `Screenshot_20261021-140322.png` | `Screenshot 2026-10-21 14.03.22.png` |
+| `2026-06-26 13-43-59.mp4` | `Screen recording 2026-06-26 13.43.59.mp4` |
+| `download (3).pdf` with a title inside | `Annual Report 2026.pdf` |
+| `track01.mp3` with song tags | `Artist - Song Title.mp3` |
+| `image-1792888971177.png` (a millisecond timestamp) | `Image 2026-10-25 11.42.51.png` (in your time zone) |
+
+Names you chose yourself (`Mum birthday.jpg`, `Tax return 2025.pdf`, `AcmeLogo.png`) are never changed. A file with no extension gets the right one added (`invoice` → `invoice.pdf`).
+
+**Grouping.** When 3 or more loose files share a name (`Acme_logo.png`, `Acme_banner.jpg`, `Acme_pack.zip`), they go into one folder named after it (`Acme`). If they're all one type, that folder goes in the matching library, for example `Pictures\Acme`.
+
+### Customising the rules
+
+Rules live in `rules.yaml`. Edit them in the **Rules** tab, or open the file directly; run `organizer where` to find it. Rules are checked top to bottom, and the first rule that matches a file wins. An untouched copy of the old v0.1 rules is upgraded automatically, and a backup is kept as `rules.v1.yaml`.
 
 ```yaml
-version: 1
+version: 2
+rename_generic: true          # rename auto-named files
+rename_in: [Downloads, Desktop]  # rename here even if no rule moves the file
+group_related: true           # 3+ files sharing a name get their own folder
+group_min: 3
+
 rules:
   - name: Screenshots
     in: [Downloads, Desktop]
-    match: { type: [image], name: "Screenshot*" }
-    move_to: Screenshots/{year}-{month}
+    match: { type: [image], kind: [screenshot] }
+    move_to: "@Pictures/Screenshots/{year}-{month}"
 
   - name: Big videos to my Videos folder
     in: [Downloads]
@@ -180,6 +237,7 @@ rules:
 | `in` | Where the rule looks: `Downloads`, `Desktop`, `Documents`, or a folder path. Leave it out to use every scanned folder. |
 | `recursive` | `false` (default) sorts only files sitting directly in the folder. `true` also looks in subfolders. |
 | `match.type` | Any of `image video audio document spreadsheet presentation archive installer code font 3d ebook`. |
+| `match.kind` | Any of `screenshot`, `camera`, `recording`. |
 | `match.ext` | Extensions, e.g. `[psd, ai]`. |
 | `match.name` | A filename pattern, e.g. `"Invoice*"`. Not case-sensitive. |
 | `match.older_than_days` | Only files not modified for this many days. |
@@ -190,9 +248,36 @@ How `move_to` is read:
 - **A relative path** like `Images/{year}` is created inside the folder the file was found in.
 - **`@Pictures/...`** means your system Pictures folder. This works for `@Documents`, `@Videos`, `@Music`, `@Downloads` and `@Desktop` too.
 - **`~/...` or a full path** goes exactly there.
-- **Tokens:** `{year}`, `{month}` and `{day}` come from the file's modified date. `{type}` and `{ext}` come from the file itself.
+- **Tokens:** `{year}`, `{month}` and `{day}` use the best date: when the photo was taken, a date in the name, or else when the file was last modified. `{type}` and `{ext}` come from the file itself.
 
-A rule needs at least one `match` condition, so a typo can't turn into "move everything". Moves never overwrite: if a name is taken, the file becomes `name (2).ext`.
+A rule needs at least one `match` condition, so a typo can't turn into "move everything". An unknown `@Folder` makes the rule do nothing rather than guess. Moves never overwrite: if a name is taken, the file becomes `name (2).ext`. If the destination is on another drive, the file is copied and verified first.
+
+---
+
+## Balancing drives
+
+Open the **Drives** tab and click **Plan balancing**. The organizer aims for every drive to be about **equally full** (by percentage).
+
+**What it moves:**
+- Big folders, and big loose files, from your Videos, Pictures, Music, Downloads, Documents and Desktop folders that **haven't changed in 30 days**.
+- Each folder moves **whole**, to the same path on the emptier drive, so `C:\Users\You\Videos\Holiday` goes to `D:\Users\You\Videos\Holiday` and things stay easy to find.
+- Folders you changed recently are listed **unticked**, so you decide.
+
+**What it never moves:** programs, AppData, system folders, projects, app libraries, sensitive folders, and anything containing online-only cloud files.
+
+**How a move works:**
+1. Free space is checked.
+2. Everything is copied to the other drive.
+3. Every file is read back and compared by hash.
+4. Only then is the original removed.
+
+If anything changes during the copy, the original stays and nothing is lost. **Undo** copies it back the same way.
+
+The bars show each drive now, after the ticked moves, and the equal-share mark. They update as you tick and untick. If there isn't enough movable data to balance fully, it says so. The usual reason is that most of the space is programs and app data, which are never moved.
+
+Folders inside your OneDrive folder are flagged, because OneDrive won't sync them from another drive.
+
+From the terminal: `organizer drives` shows space per drive, and `organizer plan balance` builds a plan to apply with `organizer apply <plan>`.
 
 ---
 
@@ -218,6 +303,11 @@ io_workers: 4                            # parallel reads while hashing; use 1 f
 large_top_n: 50                          # how many large files to list
 min_duplicate_size: 1024                 # ignore duplicates smaller than this (bytes)
 keep: smart                              # which duplicate to keep: smart, oldest, newest
+protected_names: [recovery code, password, private key, ...]  # never touch names containing these
+balance_sources: [Videos, Pictures, Music, Downloads, Documents, Desktop]
+balance_cold_days: 30                    # only move folders unchanged this long
+balance_min_mb: 100                      # ignore anything smaller when balancing
+balance_drives: []                       # limit balancing to these drives, e.g. ['C:\', 'D:\']
 ```
 
 Downloads, Desktop and Documents follow your system's real locations, including when Windows has moved them into OneDrive.
@@ -248,7 +338,8 @@ Everything the review page does is also available in the terminal:
 organizer ui [--port N] [--no-browser]   open the review page (recommended)
 organizer scan                           index the configured folders
 organizer report [--limit N] [--json]    show what the analyzers found
-organizer plan cleanup|sort              build a plan to review (changes nothing)
+organizer plan cleanup|sort|balance      build a plan to review (changes nothing)
+organizer drives                         show drives and free space
 organizer apply <plan> [--include c,c] [--yes]
                                          carry out a plan's ticked items
 organizer history                        list past batches
@@ -288,8 +379,14 @@ Yes. Files that are online-only aren't opened, so nothing gets downloaded. They'
 **It skipped some files. Why?**
 Usually because the file changed after you scanned. The result window and History → Details give the reason for each skip. Scan again and rebuild the plan.
 
+**Will it rename my files?**
+Only files whose names were clearly made up by a camera, phone, browser or app (`IMG_1234`, `download (3)`, `Untitled`, hash names). Anything that looks typed by a person is left alone. Every rename shows in the Sort preview first, and undo restores the original name. Set `rename_generic: false` in `rules.yaml` to turn it off.
+
+**It says "organizer is already running".**
+Only one copy may use a data folder at a time. You probably have the review page open in another window. Use that one, or stop it with Ctrl+C first.
+
 **Can I add other folders, like a second drive?**
-Yes: add them to `roots` in `config.yaml`. For now, rules can only move files within the same drive.
+Yes: add them to `roots` in `config.yaml`. Rules can move files to another drive too. Those moves are copied and verified first.
 
 **How fast is it?**
 On a normal SSD, around 9,000 files (165 GB) index in about 2 seconds, and a rescan takes about 1 second. Only files that could be duplicates are hashed, and hashes are cached between scans.
@@ -299,7 +396,7 @@ On a normal SSD, around 9,000 files (165 GB) index in about 2 seconds, and a res
 ## Known limitations
 
 - **macOS** builds compile but haven't been tested on a real Mac yet. Trashing goes through Finder, so macOS will ask once for permission to control Finder. Reports from Mac users are very welcome.
-- **Moving files between drives** isn't supported yet; those moves are refused with a clear message.
+- **Renaming** uses names, built-in metadata (photo EXIF, song tags, PDF and Office titles) and file types. It doesn't look at what's *in* a picture.
 - **Watching folders** to sort new files automatically isn't built yet.
 - **Similar (not identical) images** aren't detected; only exact duplicates are.
 - The binaries aren't code-signed (see [Install](#install)).
@@ -342,6 +439,9 @@ read-only   (cached)          old, rules
 | Index and journal | [modernc.org/sqlite](https://gitlab.com/cznic/sqlite) (pure Go, no CGO) |
 | Hashing | [zeebo/xxh3](https://github.com/zeebo/xxh3) for samples, [zeebo/blake3](https://github.com/zeebo/blake3) for full hashes |
 | Rules | [gopkg.in/yaml.v3](https://github.com/go-yaml/yaml) |
+| File types from content | [gabriel-vasile/mimetype](https://github.com/gabriel-vasile/mimetype) |
+| Photo dates | [rwcarlsen/goexif](https://github.com/rwcarlsen/goexif) |
+| Song tags | [dhowden/tag](https://github.com/dhowden/tag) |
 | OS calls | [golang.org/x/sys](https://pkg.go.dev/golang.org/x/sys) |
 
 Trash support is built in, with no extra dependency:

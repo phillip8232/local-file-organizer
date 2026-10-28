@@ -32,6 +32,7 @@
 <nav class="tabs" role="tablist">
   <button role="tab" data-tab="cleanup" aria-selected="true">Clean up</button>
   <button role="tab" data-tab="sort" aria-selected="false">Sort</button>
+  <button role="tab" data-tab="drives" aria-selected="false">Drives</button>
   <button role="tab" data-tab="history" aria-selected="false">History</button>
   <button role="tab" data-tab="rules" aria-selected="false">Rules</button>
 </nav>
@@ -48,10 +49,19 @@
 
   <section id="tab-sort" class="panel" hidden>
     <div class="panel-head">
-      <p class="muted">Moves files into folders using your rules (Rules tab). Only files sitting directly in each folder are sorted unless a rule says otherwise.</p>
+      <p class="muted">Moves loose files to where they belong (photos to Pictures, PDFs to Documents…) and gives auto-named files like IMG_1234 or download (3) a proper name. Names you chose are never changed. Edit the rules on the Rules tab.</p>
       <button id="build-sort" type="button">Preview sorting</button>
     </div>
     <div id="sort-body"></div>
+  </section>
+
+  <section id="tab-drives" class="panel" hidden>
+    <div class="panel-head">
+      <p class="muted">Evens out how full your drives are by moving big folders you haven't used in a while. Each folder is copied, every file is checked, and only then is the original removed. Programs, app data and projects never move.</p>
+      <button id="build-balance" type="button">Plan balancing</button>
+    </div>
+    <div id="drive-bars" class="drives"></div>
+    <div id="balance-body"></div>
   </section>
 
   <section id="tab-history" class="panel" hidden>

@@ -156,6 +156,11 @@ func (s *Scanner) walkRoot(ctx context.Context, scanID int64, root string) error
 		if fsutil.IsIgnorableFile(name) {
 			return nil
 		}
+		if s.Cfg.IsProtectedName(name) {
+			// Never indexed, so never sorted or deleted; still counts as content.
+			out <- entry{path: path, root: root, parent: parent, dir: true, opaque: true}
+			return nil
+		}
 		info, ierr := d.Info()
 		if ierr != nil {
 			s.skipped.Add(1)

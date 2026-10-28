@@ -22,14 +22,18 @@ const (
 type Action struct {
 	ID       int    `json:"id"`
 	Op       string `json:"op"`
-	Category string `json:"category"` // duplicate, empty-file, empty-dir, junk, old-download, large, rule
+	Category string `json:"category"` // duplicate, empty-file, empty-dir, junk, old-download, large, rule, group, balance
 	Src      string `json:"src"`
 	Dst      string `json:"dst,omitempty"`
 	Size     int64  `json:"size"`
 	MTime    int64  `json:"mtime"`
 	IsDir    bool   `json:"isDir,omitempty"`
-	Hash     string `json:"hash,omitempty"` // duplicates: content the file must still have
-	KeepPath string `json:"keep,omitempty"` // duplicates: the copy that must survive
+	Count    int64  `json:"count,omitempty"` // folders: files inside, re-checked before a move
+	Hash     string `json:"hash,omitempty"`  // duplicates: content the file must still have
+	KeepPath string `json:"keep,omitempty"`  // duplicates: the copy that must survive
+	FromVol  string `json:"fromVol,omitempty"`
+	ToVol    string `json:"toVol,omitempty"`
+	Rule     string `json:"rule,omitempty"` // sort: the rule or group that produced it
 	Reason   string `json:"reason"`
 	Selected bool   `json:"selected"` // pre-ticked in review
 }
@@ -37,7 +41,7 @@ type Action struct {
 // Plan is a stored proposal.
 type Plan struct {
 	ID      int64              `json:"id"`
-	Kind    string             `json:"kind"` // cleanup | sort
+	Kind    string             `json:"kind"` // cleanup | sort | balance
 	Created int64              `json:"created"`
 	Actions []Action           `json:"actions"`
 	Groups  []analyze.DupGroup `json:"groups,omitempty"`

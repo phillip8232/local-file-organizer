@@ -78,7 +78,9 @@ func setup(t *testing.T) *env {
 	// The temp folder lives under AppData on Windows, which is protected.
 	cfg.ProtectedPaths = []string{cfg.DataDir}
 	cfg.DownloadsDir = filepath.Join(root, "Downloads")
-	cfg.Known = map[string]string{"downloads": cfg.DownloadsDir}
+	cfg.Known = map[string]string{"downloads": cfg.DownloadsDir,
+		"pictures": filepath.Join(root, "Pictures"), "documents": filepath.Join(root, "Docs"),
+		"videos": filepath.Join(root, "Videos"), "music": filepath.Join(root, "Music")}
 	setBirth(t, filepath.Join(root, "Downloads", "ancient.zip"), old)
 	setBirth(t, filepath.Join(root, "Downloads", "movie.mp4.crdownload"), old)
 	db, err := index.Open(filepath.Join(data, "organizer.db"))
@@ -266,11 +268,16 @@ func TestSortRulesAndPurge(t *testing.T) {
 		dsts[filepath.Base(a.Src)] = a.Dst
 	}
 	year := time.Now().Format("2006")
-	if want := e.p("Downloads/Images/" + year + "/photo.jpg"); dsts["photo.jpg"] != want {
-		t.Errorf("photo.jpg → %q, want %q", dsts["photo.jpg"], want)
+	// "photo.jpg" is a generic name: it goes to Pictures and gets a dated name.
+	photoDst := dsts["photo.jpg"]
+	if filepath.Dir(photoDst) != e.p("Pictures/Downloaded/"+year) || !strings.HasPrefix(filepath.Base(photoDst), "Image "+year+"-") {
+		t.Errorf("photo.jpg → %q, want Pictures/Downloaded/%s/Image <date>.jpg", photoDst, year)
 	}
-	if _, ok := dsts["report.pdf"]; !ok {
-		t.Error("report.pdf in Downloads should match the Documents rule")
+	if want := e.p("Docs/PDFs/" + year + "/report.pdf"); dsts["report.pdf"] != want {
+		t.Errorf("report.pdf → %q, want %q", dsts["report.pdf"], want)
+	}
+	if want := e.p("Downloads/Archives/ancient.zip"); dsts["ancient.zip"] != want {
+		t.Errorf("ancient.zip → %q, want %q", dsts["ancient.zip"], want)
 	}
 	if _, ok := dsts["small-b.txt"]; ok {
 		t.Error("files in subfolders of other roots must not be sorted")
@@ -281,15 +288,15 @@ func TestSortRulesAndPurge(t *testing.T) {
 	if err != nil || res.Failed != 0 {
 		t.Fatalf("apply: %v %+v", err, res)
 	}
-	if !exists(e.p("Downloads/Images/" + year + "/photo.jpg")) {
+	if !exists(photoDst) {
 		t.Fatal("photo not moved")
 	}
 	u, err := e.ex.Undo(res.Batch)
 	if err != nil || u.Failed != 0 {
 		t.Fatalf("undo: %v %+v", err, u)
 	}
-	if !exists(e.p("Downloads/photo.jpg")) || exists(e.p("Downloads/Images")) {
-		t.Error("undo should restore the photo and remove the folders it created")
+	if !exists(e.p("Downloads/photo.jpg")) || exists(e.p("Pictures")) || exists(e.p("Downloads/Archives")) {
+		t.Error("undo should restore the original names and remove the folders it created")
 	}
 
 	// Purge: a held item goes to the trash from its original location.

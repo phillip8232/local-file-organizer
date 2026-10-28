@@ -37,9 +37,23 @@ type Config struct {
 	MinDuplicateSize int64 `yaml:"min_duplicate_size"`
 	// Which copy of a duplicate to keep by default: smart, oldest or newest.
 	Keep string `yaml:"keep"`
+	// Names that are always protected wherever they appear, matched
+	// case-insensitively against each folder or file name in a path, e.g. a
+	// "Recovery Codes" folder.
+	ProtectedNames []string `yaml:"protected_names"`
+
+	// Drive balancing: folders whose contents may move to another drive.
+	BalanceSources []string `yaml:"balance_sources"`
+	// Only folders untouched for this many days are moved between drives.
+	BalanceColdDays int `yaml:"balance_cold_days"`
+	// Folders and files smaller than this many MB aren't worth moving.
+	BalanceMinMB int64 `yaml:"balance_min_mb"`
+	// Drives balancing may use, e.g. ['C:\', 'D:\']. Empty means every fixed drive.
+	BalanceDrives []string `yaml:"balance_drives"`
 
 	DataDir        string   `yaml:"-"`
 	RootPaths      []string `yaml:"-"`
+	BalancePaths   []string `yaml:"-"`
 	ProtectedPaths []string `yaml:"-"`
 	DownloadsDir   string   `yaml:"-"`
 	// Known maps lower-case known-folder names (downloads, pictures, …) to paths.
@@ -61,6 +75,13 @@ func defaults() Config {
 		LargeTopN:        50,
 		MinDuplicateSize: 1024,
 		Keep:             "smart",
+		ProtectedNames: []string{
+			"recovery code", "backup code", "password", "private key", "seed phrase",
+			"wallet", ".ssh", ".gnupg", "keepass", ".kdbx",
+		},
+		BalanceSources:  []string{"Videos", "Pictures", "Music", "Downloads", "Documents", "Desktop"},
+		BalanceColdDays: 30,
+		BalanceMinMB:    100,
 	}
 }
 
@@ -120,6 +141,15 @@ func (c *Config) resolve() error {
 		c.RootPaths = append(c.RootPaths, p)
 	}
 	c.RootPaths = dropNested(c.RootPaths)
+	c.BalancePaths = nil
+	for _, r := range c.BalanceSources {
+		if p := c.ResolvePath(r); p != "" {
+			if fi, err := os.Stat(p); err == nil && fi.IsDir() {
+				c.BalancePaths = append(c.BalancePaths, p)
+			}
+		}
+	}
+	c.BalancePaths = dropNested(c.BalancePaths)
 	c.ProtectedPaths = append(defaultProtected(), c.DataDir)
 	for _, p := range c.Protected {
 		if p = c.ResolvePath(p); p != "" {
@@ -162,7 +192,38 @@ func (c *Config) IsProtected(path string) bool {
 			return true
 		}
 	}
+	for _, part := range strings.FieldsFunc(path, func(r rune) bool { return r == '/' || r == '\\' }) {
+		if c.IsProtectedName(part) {
+			return true
+		}
+	}
 	return false
+}
+
+// IsProtectedName reports whether a single file or folder name matches
+// protected_names.
+func (c *Config) IsProtectedName(name string) bool {
+	low := strings.ToLower(name)
+	for _, n := range c.ProtectedNames {
+		if n != "" && strings.Contains(low, strings.ToLower(n)) {
+			return true
+		}
+	}
+	return false
+}
+
+// SourceOf returns the root or balance folder containing path, or "".
+// Only paths inside one of these may be moved or deleted.
+func (c *Config) SourceOf(path string) string {
+	if r := c.RootOf(path); r != "" {
+		return r
+	}
+	for _, b := range c.BalancePaths {
+		if fsutil.Within(path, b) {
+			return b
+		}
+	}
+	return ""
 }
 
 // IgnoreDir reports whether a folder with this name is skipped entirely.

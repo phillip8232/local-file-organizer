@@ -4,15 +4,24 @@ package index
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
 
 // DB wraps the organizer's SQLite database.
-type DB struct{ *sql.DB }
+type DB struct {
+	*sql.DB
+	// Recovered is set when a damaged database was set aside and rebuilt;
+	// it says where the old file went and what was kept.
+	Recovered string
+}
 
 const schema = `
 CREATE TABLE IF NOT EXISTS files(
@@ -96,21 +105,89 @@ CREATE INDEX IF NOT EXISTS journal_batch ON journal(batch);
 CREATE INDEX IF NOT EXISTS journal_state ON journal(state);
 `
 
-// Open opens (creating if needed) the database at path.
+// Open opens (creating if needed) the database at path. If the file is
+// damaged it's moved aside and a fresh one is created, keeping whatever
+// history (batches, journal, plans) can still be read. The file index itself
+// is only a cache that the next scan rebuilds.
 func Open(path string) (*DB, error) {
+	db, err := openChecked(path)
+	if err == nil || !isCorrupt(err) {
+		return db, err
+	}
+	return recoverDB(path, err)
+}
+
+func openRaw(path string) (*sql.DB, error) {
 	q := url.Values{}
-	for _, p := range []string{"busy_timeout(10000)", "journal_mode(WAL)", "synchronous(NORMAL)"} {
+	// FULL sync: the journal is what undo relies on, so every commit is on
+	// disk before the matching file operation runs.
+	for _, p := range []string{"busy_timeout(15000)", "journal_mode(WAL)", "synchronous(FULL)"} {
 		q.Add("_pragma", p)
 	}
-	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path)+"?"+q.Encode())
+	return sql.Open("sqlite", "file:"+filepath.ToSlash(path)+"?"+q.Encode())
+}
+
+func openChecked(path string) (*DB, error) {
+	db, err := openRaw(path)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := db.Exec(schema); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("init schema: %w", err)
+	// Setting up WAL can briefly report "busy" if another opener is mid-way;
+	// wait it out rather than failing.
+	for attempt := 0; ; attempt++ {
+		_, err = db.Exec(schema)
+		if err == nil || !strings.Contains(err.Error(), "SQLITE_BUSY") || attempt == 20 {
+			break
+		}
+		time.Sleep(250 * time.Millisecond)
 	}
-	return &DB{db}, nil
+	if err == nil {
+		var res string
+		if err = db.QueryRow(`PRAGMA quick_check(1)`).Scan(&res); err == nil && res != "ok" {
+			err = fmt.Errorf("database disk image is malformed: %s", res)
+		}
+	}
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	return &DB{DB: db}, nil
+}
+
+func isCorrupt(err error) bool {
+	s := err.Error()
+	return strings.Contains(s, "malformed") || strings.Contains(s, "SQLITE_CORRUPT") || strings.Contains(s, "not a database")
+}
+
+// recoverDB moves a damaged database aside and rebuilds it.
+func recoverDB(path string, cause error) (*DB, error) {
+	aside := fmt.Sprintf("%s.damaged-%s", path, time.Now().Format("20060102-150405"))
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		if err := os.Rename(path+suffix, aside+suffix); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("database is damaged (%v) and couldn't be moved aside: %w", cause, err)
+		}
+	}
+	db, err := openChecked(path)
+	if err != nil {
+		return nil, err
+	}
+	kept := []string{}
+	if _, err := db.Exec(`ATTACH DATABASE ? AS old`, "file:"+filepath.ToSlash(aside)+"?mode=ro"); err == nil {
+		for _, t := range []string{"batches", "journal", "plans"} {
+			if res, err := db.Exec(`INSERT OR IGNORE INTO main.` + t + ` SELECT * FROM old.` + t); err == nil {
+				if n, _ := res.RowsAffected(); n > 0 {
+					kept = append(kept, fmt.Sprintf("%d %s", n, t))
+				}
+			}
+		}
+		_, _ = db.Exec(`DETACH DATABASE old`)
+	}
+	db.Recovered = fmt.Sprintf("The database was damaged (%v). It was moved to %s and rebuilt", cause, aside)
+	if len(kept) > 0 {
+		db.Recovered += ", keeping " + strings.Join(kept, ", ")
+	}
+	db.Recovered += ". Run a scan to rebuild the file index."
+	return db, nil
 }
 
 // Stats is a quick summary of the index for status displays.

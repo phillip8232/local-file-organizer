@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/phillip8232/local-file-organizer/internal/config"
@@ -35,7 +36,34 @@ type Executor struct {
 	DB    *index.DB
 	Cfg   *config.Config
 	Trash func(path string) error
-	mu    sync.Mutex
+	// ForceCopy treats every move as a move between drives (for tests).
+	ForceCopy bool
+	mu        sync.Mutex
+
+	items, itemsDone, bytes, bytesDone atomic.Int64
+	current                            atomic.Value
+}
+
+// Progress is a snapshot of the running batch or undo.
+type Progress struct {
+	Items     int64  `json:"items"`
+	ItemsDone int64  `json:"itemsDone"`
+	Bytes     int64  `json:"bytes"`
+	BytesDone int64  `json:"bytesDone"`
+	Current   string `json:"current"`
+}
+
+func (e *Executor) Progress() Progress {
+	cur, _ := e.current.Load().(string)
+	return Progress{Items: e.items.Load(), ItemsDone: e.itemsDone.Load(), Bytes: e.bytes.Load(), BytesDone: e.bytesDone.Load(), Current: cur}
+}
+
+func (e *Executor) startProgress(items int, bytes int64) {
+	e.items.Store(int64(items))
+	e.itemsDone.Store(0)
+	e.bytes.Store(bytes)
+	e.bytesDone.Store(0)
+	e.current.Store("")
 }
 
 // Result summarises a batch, an undo or a purge.
@@ -65,18 +93,18 @@ func (e *Executor) holdingRoot() string { return filepath.Join(e.Cfg.DataDir, "h
 // recover settles journal rows left 'pending' by a crash by looking at what
 // actually happened on disk.
 func (e *Executor) recover() error {
-	rows, err := e.DB.Query(`SELECT id, src, dst FROM journal WHERE state='pending'`)
+	rows, err := e.DB.Query(`SELECT id, op, src, dst FROM journal WHERE state='pending'`)
 	if err != nil {
 		return err
 	}
 	type pend struct {
-		id       int64
-		src, dst string
+		id           int64
+		op, src, dst string
 	}
 	var ps []pend
 	for rows.Next() {
 		var p pend
-		if err := rows.Scan(&p.id, &p.src, &p.dst); err != nil {
+		if err := rows.Scan(&p.id, &p.op, &p.src, &p.dst); err != nil {
 			rows.Close()
 			return err
 		}
@@ -84,13 +112,17 @@ func (e *Executor) recover() error {
 	}
 	rows.Close()
 	for _, p := range ps {
+		if p.op == "xmove" && p.dst != "" {
+			// A copy cut short never got renamed into place; drop it.
+			_ = os.RemoveAll(partialPath(p.dst))
+		}
 		srcThere, dstThere := exists(p.src), p.dst != "" && exists(p.dst)
 		state, msg := "failed", "interrupted before it ran"
 		switch {
 		case dstThere && !srcThere:
 			state, msg = "done", ""
 		case dstThere && srcThere:
-			msg = "interrupted; both copies exist"
+			msg = "interrupted; both copies exist, nothing was lost"
 		}
 		if _, err := e.DB.Exec(`UPDATE journal SET state=?, error=? WHERE id=?`, state, msg, p.id); err != nil {
 			return err
@@ -117,34 +149,28 @@ func (e *Executor) Apply(ctx context.Context, planID int64, summary string, acti
 	batch, _ := res.LastInsertId()
 	r := &Result{Batch: batch}
 	sort.SliceStable(actions, func(i, j int) bool { return !actions[i].IsDir && actions[j].IsDir })
+	var moveBytes int64
+	for _, a := range actions {
+		if a.Op == plan.OpMove {
+			moveBytes += a.Size
+		}
+	}
+	e.startProgress(len(actions), moveBytes)
 	holdDir := filepath.Join(e.holdingRoot(), strconv.FormatInt(batch, 10))
 	for i, a := range actions {
 		if ctx.Err() != nil {
 			r.note("stopped: %v", ctx.Err())
 			break
 		}
-		if reason := e.verify(ctx, a); reason != "" {
-			r.Skipped++
-			r.note("skipped %s: %s", a.Src, reason)
-			continue
-		}
-		var err error
-		switch a.Op {
-		case plan.OpDelete:
-			err = e.hold(batch, holdDir, i+1, a)
-		case plan.OpMove:
-			err = e.move(batch, a)
-		default:
-			err = fmt.Errorf("unknown op %q", a.Op)
-		}
+		e.current.Store(a.Src)
+		err := e.applyOne(ctx, batch, holdDir, i+1, a, r)
+		e.itemsDone.Add(1)
 		if err != nil {
 			r.Failed++
 			r.note("failed %s: %v", a.Src, err)
-			continue
 		}
-		r.Done++
-		r.Bytes += a.Size
 	}
+	e.current.Store("")
 	state := "done"
 	switch {
 	case r.Done == 0:
@@ -154,6 +180,31 @@ func (e *Executor) Apply(ctx context.Context, planID int64, summary string, acti
 	}
 	_, err = e.DB.Exec(`UPDATE batches SET state=? WHERE id=?`, state, batch)
 	return r, err
+}
+
+// applyOne verifies and carries out one action, counting skips and
+// successes in r. A returned error is a failure.
+func (e *Executor) applyOne(ctx context.Context, batch int64, holdDir string, seq int, a plan.Action, r *Result) error {
+	if reason := e.verify(ctx, a); reason != "" {
+		r.Skipped++
+		r.note("skipped %s: %s", a.Src, reason)
+		return nil
+	}
+	var err error
+	switch a.Op {
+	case plan.OpDelete:
+		err = e.hold(batch, holdDir, seq, a)
+	case plan.OpMove:
+		err = e.move(ctx, batch, a)
+	default:
+		err = fmt.Errorf("unknown op %q", a.Op)
+	}
+	if err != nil {
+		return err
+	}
+	r.Done++
+	r.Bytes += a.Size
+	return nil
 }
 
 // verify re-checks an action against the disk. It returns why the action
@@ -169,7 +220,7 @@ func (e *Executor) verify(ctx context.Context, a plan.Action) string {
 	if fi.IsDir() != a.IsDir {
 		return "changed type"
 	}
-	root := e.Cfg.RootOf(a.Src)
+	root := e.Cfg.SourceOf(a.Src)
 	switch {
 	case root == "":
 		return "outside the folders being organised"
@@ -180,11 +231,20 @@ func (e *Executor) verify(ctx context.Context, a plan.Action) string {
 	case fsutil.InProject(a.Src, root):
 		return "inside a project folder"
 	}
-	if a.IsDir {
+	switch {
+	case a.IsDir && a.Op == plan.OpDelete:
 		if ok, _ := fsutil.OnlyIgnorable(a.Src); !ok {
 			return "folder is no longer empty"
 		}
-	} else if fi.Size() != a.Size || fi.ModTime().UnixNano() != a.MTime {
+	case a.IsDir:
+		st := fsutil.StatDir(a.Src)
+		if st.Unsafe != "" {
+			return "folder " + st.Unsafe
+		}
+		if st.Size != a.Size || st.Count != a.Count {
+			return "folder changed since it was planned"
+		}
+	case fi.Size() != a.Size || fi.ModTime().UnixNano() != a.MTime:
 		return "changed since the scan"
 	}
 	if a.Op == plan.OpMove {
@@ -323,10 +383,10 @@ func (e *Executor) hold(batch int64, holdDir string, seq int, a plan.Action) err
 	return e.finish(id, e.Trash(a.Src))
 }
 
-// move renames a file to its destination, never overwriting: a name clash
-// gets " (2)" and so on. Folders it creates are journaled so undo can remove
-// them again.
-func (e *Executor) move(batch int64, a plan.Action) error {
+// move renames a file or folder to its destination, never overwriting: a
+// name clash gets " (2)" and so on. Folders it creates are journaled so undo
+// can remove them again. Moves to another drive copy and verify first.
+func (e *Executor) move(ctx context.Context, batch int64, a plan.Action) error {
 	dst := fsutil.UniquePath(a.Dst)
 	var missing []string
 	for d := filepath.Dir(dst); !exists(d); d = filepath.Dir(d) {
@@ -344,15 +404,42 @@ func (e *Executor) move(batch int64, a plan.Action) error {
 			return err
 		}
 	}
-	id, err := e.journal(batch, "move", a.Category, a.Src, dst, a.Size, false, "pending")
+	if !e.ForceCopy {
+		id, err := e.journal(batch, "move", a.Category, a.Src, dst, a.Size, a.IsDir, "pending")
+		if err != nil {
+			return err
+		}
+		err = os.Rename(a.Src, dst)
+		if !platform.IsCrossDevice(err) {
+			if err == nil {
+				e.bytesDone.Add(a.Size)
+			}
+			return e.finish(id, err)
+		}
+		// Different drive: this row never happened; record the copy instead.
+		_, _ = e.DB.Exec(`DELETE FROM journal WHERE id=?`, id)
+	}
+	return e.crossMove(ctx, batch, a, dst)
+}
+
+// crossMove moves between drives: copy, verify every byte, and only then
+// remove the original. Free space is checked first, with a safety margin.
+func (e *Executor) crossMove(ctx context.Context, batch int64, a plan.Action, dst string) error {
+	free, err := platform.FreeSpace(filepath.Dir(dst))
+	if err == nil && free < a.Size+spaceMargin {
+		return fmt.Errorf("not enough free space on the destination drive (%d MB free, %d MB needed)", free>>20, (a.Size+spaceMargin)>>20)
+	}
+	id, err := e.journal(batch, "xmove", a.Category, a.Src, dst, a.Size, a.IsDir, "pending")
 	if err != nil {
 		return err
 	}
-	err = os.Rename(a.Src, dst)
-	if platform.IsCrossDevice(err) {
-		err = errors.New("moving between drives isn't supported yet")
+	if err := copyVerified(ctx, a.Src, dst, func(n int64) { e.bytesDone.Add(n) }); err != nil {
+		return e.finish(id, err)
 	}
-	return e.finish(id, err)
+	if err := removeAll(a.Src); err != nil {
+		return e.finish(id, fmt.Errorf("copied and verified, but couldn't remove the original: %w", err))
+	}
+	return e.finish(id, nil)
 }
 
 // Undo reverses every finished step of a batch, newest first. Anything whose
@@ -380,6 +467,14 @@ func (e *Executor) Undo(batch int64) (*Result, error) {
 		steps = append(steps, s)
 	}
 	rows.Close()
+	var copyBytes int64
+	for _, s := range steps {
+		if s.op == "xmove" && s.state == "done" {
+			copyBytes += s.size
+		}
+	}
+	e.startProgress(len(steps), copyBytes)
+	defer e.current.Store("")
 	r := &Result{Batch: batch}
 	for _, s := range steps {
 		switch {
@@ -412,7 +507,20 @@ func (e *Executor) Undo(batch int64) (*Result, error) {
 			r.note("%s: %v", s.src, err)
 			continue
 		}
-		if err := os.Rename(s.dst, target); err != nil {
+		e.current.Store(s.dst)
+		var err error
+		if s.op == "xmove" {
+			// Copy back to the original drive, verified, then remove the copy.
+			if free, ferr := platform.FreeSpace(filepath.Dir(target)); ferr == nil && free < s.size+spaceMargin {
+				err = fmt.Errorf("not enough free space to move it back")
+			} else if err = copyVerified(context.Background(), s.dst, target, func(n int64) { e.bytesDone.Add(n) }); err == nil {
+				err = removeAll(s.dst)
+			}
+		} else {
+			err = os.Rename(s.dst, target)
+		}
+		e.itemsDone.Add(1)
+		if err != nil {
 			r.Failed++
 			r.note("%s: %v", s.src, err)
 			continue

@@ -97,6 +97,10 @@ const state = {
   sortSel: new Set(),
   metas: [],       // functions that refresh cleanup section counts
   sortMetas: [],   // same for the sort sections
+  balance: null,   // { plan, drives, note, skipped }
+  balSel: new Set(),
+  balMetas: [],
+  drives: [],      // current drive list for the bars
   wasScanning: false,
 };
 
@@ -123,16 +127,19 @@ async function refreshStatus() {
     pill.hidden = !s.holding.items;
     pill.textContent = `Holding: ${num(s.holding.items)} items · ${human(s.holding.bytes)}`;
     const scanning = s.busy === "scan";
+    const working = s.busy === "apply" || s.busy === "undo";
     $("scan-btn").disabled = !!s.busy;
-    $("scan-box").hidden = !scanning;
+    $("scan-box").hidden = !scanning && !working;
+    $("scan-cancel").hidden = !scanning;
     if (scanning && s.scan) showScan(s.scan);
+    if (working && s.progress) showWork(s.busy, s.progress);
     if (s.lastError) showError(s.lastError);
     if (state.wasScanning && !scanning) {
       state.wasScanning = false;
       if (!s.lastError && state.tab === "cleanup") buildCleanup();
     }
     if (scanning) state.wasScanning = true;
-    setTimeout(refreshStatus, scanning ? 700 : 8000);
+    setTimeout(refreshStatus, scanning || working ? 700 : 8000);
   } catch (e) {
     showError(e);
     setTimeout(refreshStatus, 5000);
@@ -153,6 +160,49 @@ function showScan(p) {
   }
 }
 
+// showWork shows an apply or undo in progress, by bytes when copying.
+function showWork(job, p) {
+  const bar = $("scan-bar");
+  bar.classList.remove("indeterminate");
+  const verb = job === "undo" ? "Undoing" : "Working";
+  let text = `${verb}: ${num(p.itemsDone)} of ${num(p.items)} items`;
+  let frac = p.items ? p.itemsDone / p.items : 0;
+  if (p.bytes > 0) {
+    text += ` · ${human(p.bytesDone)} of ${human(p.bytes)} copied`;
+    frac = p.bytesDone / p.bytes;
+  }
+  if (p.current) text += ` · ${splitPath(p.current)[1]}`;
+  $("scan-text").textContent = text;
+  bar.style.width = Math.min(100, Math.round(frac * 100)) + "%";
+}
+
+// waitForJob resolves with the result of the background apply or undo that
+// was just started.
+async function waitForJob(prevId) {
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 700));
+    let s;
+    try { s = await api("GET", "/api/status"); } catch { continue; }
+    if (s.busy === "apply" || s.busy === "undo") {
+      $("scan-box").hidden = false;
+      $("scan-cancel").hidden = true;
+      if (s.progress) showWork(s.busy, s.progress);
+      continue;
+    }
+    if (s.lastResult && s.lastResult.id > prevId) {
+      $("scan-box").hidden = true;
+      return s.lastResult;
+    }
+  }
+}
+
+async function lastJobId() {
+  try {
+    const s = await api("GET", "/api/status");
+    return s.lastResult ? s.lastResult.id : 0;
+  } catch { return 0; }
+}
+
 async function startScan() {
   showError(null);
   try {
@@ -169,8 +219,9 @@ async function startScan() {
 function setTab(tab) {
   state.tab = tab;
   for (const b of document.querySelectorAll(".tabs button")) b.setAttribute("aria-selected", String(b.dataset.tab === tab));
-  for (const t of ["cleanup", "sort", "history", "rules"]) $("tab-" + t).hidden = t !== tab;
+  for (const t of ["cleanup", "sort", "drives", "history", "rules"]) $("tab-" + t).hidden = t !== tab;
   if (tab === "history") loadHistory();
+  if (tab === "drives" && !state.balance) loadDrives();
   if (tab === "rules") loadRules();
   updateApproveBar();
 }
@@ -357,7 +408,7 @@ function cleanupSelection() {
 }
 
 function updateCounts() {
-  for (const f of [...state.metas, ...state.sortMetas]) f();
+  for (const f of [...state.metas, ...state.sortMetas, ...state.balMetas]) f();
   updateApproveBar();
 }
 
@@ -372,6 +423,11 @@ function updateApproveBar() {
     bar.hidden = false;
     $("approve-text").textContent = `${num(state.sortSel.size)} moves selected`;
     $("approve-btn").disabled = state.sortSel.size === 0;
+  } else if (state.tab === "drives" && state.balance) {
+    const bytes = state.balance.plan.actions.filter((a) => state.balSel.has(a.id)).reduce((t, a) => t + a.size, 0);
+    bar.hidden = false;
+    $("approve-text").textContent = `${num(state.balSel.size)} items selected · ${human(bytes)}`;
+    $("approve-btn").disabled = state.balSel.size === 0;
   } else {
     bar.hidden = true;
   }
@@ -406,16 +462,35 @@ async function approve() {
     await runApply(state.sort.plan.id, { ids: [...state.sortSel], groups: {} }, "Moved");
     state.sort = null;
     $("sort-body").replaceChildren(h("div", { class: "empty" }, "Done. Rescanning…"));
+  } else if (state.tab === "drives") {
+    const acts = state.balance.plan.actions.filter((a) => state.balSel.has(a.id));
+    const bytes = acts.reduce((t, a) => t + a.size, 0);
+    const minutes = Math.max(1, Math.round(bytes / (500 * 1024 * 1024) / 60));
+    const ok = await dialog("Move selected folders to another drive?", [
+      h("p", {}, `${num(acts.length)} items (${human(bytes)}) will be copied to the other drive. Every file is checked against the original, and only then is the original removed.`),
+      h("p", {}, `This can take a while: roughly ${minutes} minute${minutes === 1 ? "" : "s"} on fast SSDs. You can keep using the page; progress shows at the top.`),
+      h("p", { class: "muted" }, "Undo in History copies everything back the same careful way."),
+    ], { ok: `Move ${human(bytes)}` });
+    if (!ok) return;
+    await runApply(state.balance.plan.id, { ids: [...state.balSel], groups: {} }, "Moved");
+    state.balance = null;
+    $("balance-body").replaceChildren(h("div", { class: "empty" }, "Done."));
+    loadDrives();
   }
   updateApproveBar();
   startScan();
 }
 
+// runApply starts a batch in the background and shows its result when it
+// finishes.
 async function runApply(planId, approval, verb) {
   $("approve-btn").disabled = true;
   try {
-    const res = await api("POST", `/api/plan/${planId}/apply`, approval);
-    await dialog(`Batch #${res.batch} finished`, resultBody(res, verb), { ok: "Close", cancel: null });
+    const prev = await lastJobId();
+    await api("POST", `/api/plan/${planId}/apply`, approval);
+    const job = await waitForJob(prev);
+    if (job.error) throw new Error(job.error);
+    await dialog(`Batch #${job.result.batch} finished`, resultBody(job.result, verb), { ok: "Close", cancel: null });
   } catch (e) { showError(e); }
 }
 
@@ -442,8 +517,9 @@ function renderSort() {
   }
   const byRule = new Map();
   for (const a of actions) {
-    if (!byRule.has(a.reason)) byRule.set(a.reason, []);
-    byRule.get(a.reason).push(a);
+    const key = a.rule || a.reason;
+    if (!byRule.has(key)) byRule.set(key, []);
+    byRule.get(key).push(a);
   }
   const sections = [];
   for (const [rule, acts] of byRule) {
@@ -454,8 +530,10 @@ function renderSort() {
         const cb = h("input", { type: "checkbox", checked: state.sortSel.has(a.id), "aria-label": "Move " + a.src,
           onchange: (e) => { e.target.checked ? state.sortSel.add(a.id) : state.sortSel.delete(a.id); updateCounts(); } });
         boxes.set(a.id, cb);
+        const [dstDir, dstName] = splitPath(a.dst);
+        const renamed = dstName !== splitPath(a.src)[1];
         list.append(h("div", { class: "item" }, cb, pathNode(a.src), h("span", { class: "meta" }, human(a.size)), revealBtn(a.src),
-          h("span", { class: "dest" }, "→ " + splitPath(a.dst)[0])));
+          h("span", { class: "dest" }, "→ " + dstDir, renamed ? h("strong", { class: "new-name" }, dstName) : null)));
       }
     });
     const toggleAll = (on) => {
@@ -471,6 +549,114 @@ function renderSort() {
     sections.push(sectionShell(rule, "", [list, more], toggleAll, metaFn, null, state.sortMetas));
   }
   $("sort-body").replaceChildren(...sections);
+  updateApproveBar();
+}
+
+// ---------- drives ----------
+
+async function loadDrives() {
+  try {
+    const d = await api("GET", "/api/drives");
+    state.drives = d.drives || [];
+    renderDriveBars();
+  } catch (e) { showError(e); }
+}
+
+// renderDriveBars draws each drive now, after the ticked moves, and its
+// equal-share target.
+function renderDriveBars() {
+  const plan = state.balance;
+  const drives = plan ? plan.drives : state.drives;
+  const after = {};
+  for (const d of drives) after[d.root] = d.total - d.free;
+  if (plan) {
+    for (const a of plan.plan.actions) {
+      if (!state.balSel.has(a.id)) continue;
+      after[a.fromVol] -= a.size;
+      after[a.toVol] += a.size;
+    }
+  }
+  const pct = (n, t) => (t ? (100 * n) / t : 0);
+  const bars = drives.map((d) => {
+    const used = d.total - d.free;
+    const nowEl = h("div", { class: "now" });
+    nowEl.style.width = pct(used, d.total).toFixed(1) + "%";
+    const afterEl = h("div", { class: "after" });
+    afterEl.style.width = pct(after[d.root], d.total).toFixed(1) + "%";
+    const kids = [nowEl, afterEl];
+    if (plan) {
+      const t = h("div", { class: "target", title: "Equal share" });
+      t.style.left = pct(d.target, d.total).toFixed(1) + "%";
+      kids.push(t);
+    }
+    const label = `${d.root}${d.label ? " " + d.label : ""}${d.system ? " (system)" : ""}`;
+    const change = plan && after[d.root] !== used ? ` → ${pct(after[d.root], d.total).toFixed(0)}%` : "";
+    return h("div", { class: "drive" },
+      h("div", { class: "drive-head" }, h("strong", {}, label),
+        h("span", { class: "muted" }, `${human(used)} of ${human(d.total)} · ${pct(used, d.total).toFixed(0)}%${change} · ${human(d.free)} free`)),
+      h("div", { class: "drive-bar" }, ...kids));
+  });
+  if (plan) {
+    bars.push(h("div", { class: "legend" }, h("span", {}, h("i", { class: "l-now" }), "now"),
+      h("span", {}, h("i", { class: "l-after" }), "after the ticked moves"), h("span", {}, h("i", { class: "l-target" }), "equal share")));
+  }
+  $("drive-bars").replaceChildren(...bars);
+}
+
+async function buildBalance() {
+  showError(null);
+  const btn = $("build-balance");
+  btn.disabled = true;
+  try {
+    state.balance = await api("POST", "/api/plan/balance");
+    state.balSel = new Set(state.balance.plan.actions.filter((a) => a.selected).map((a) => a.id));
+    renderBalance();
+  } catch (e) { showError(e); } finally { btn.disabled = false; }
+}
+
+function renderBalance() {
+  state.balMetas = [];
+  const { plan, note, skipped } = state.balance;
+  const body = [];
+  if (note) body.push(h("p", { class: "note" }, note));
+  const byRoute = new Map();
+  for (const a of plan.actions) {
+    const key = `${a.fromVol} → ${a.toVol}`;
+    if (!byRoute.has(key)) byRoute.set(key, []);
+    byRoute.get(key).push(a);
+  }
+  for (const [route, acts] of byRoute) {
+    const list = h("div", { class: "list" });
+    const boxes = new Map();
+    for (const a of acts) {
+      const cb = h("input", { type: "checkbox", checked: state.balSel.has(a.id), "aria-label": "Move " + a.src,
+        onchange: (e) => { e.target.checked ? state.balSel.add(a.id) : state.balSel.delete(a.id); updateCounts(); renderDriveBars(); } });
+      boxes.set(a.id, cb);
+      list.append(h("div", { class: "item" }, cb, pathNode(a.src),
+        h("span", { class: "meta" }, `${human(a.size)} · ${num(a.count)} file${a.count === 1 ? "" : "s"}`), revealBtn(a.src),
+        h("span", { class: "dest" }, "→ " + a.dst + "  ·  " + a.reason)));
+    }
+    const toggleAll = (on) => {
+      for (const a of acts) on ? state.balSel.add(a.id) : state.balSel.delete(a.id);
+      for (const [id, cb] of boxes) cb.checked = state.balSel.has(id);
+      updateCounts();
+      renderDriveBars();
+    };
+    const metaFn = () => {
+      let sel = 0, bytes = 0;
+      for (const a of acts) if (state.balSel.has(a.id)) { sel++; bytes += a.size; }
+      return { sel, total: acts.length, bytes };
+    };
+    body.push(sectionShell(route, "Whole folders keep their place: the same path on the other drive.", [list], toggleAll, metaFn, null, state.balMetas));
+  }
+  if (!plan.actions.length && !note) body.push(h("div", { class: "empty" }, "Nothing to move."));
+  if (skipped && skipped.length) {
+    body.push(h("details", { class: "section" }, h("summary", {}, h("span", { class: "section-title" }, "Left alone"),
+      h("span", { class: "section-meta" }, `${skipped.length} big folders`)),
+      h("div", { class: "list" }, skipped.map((s) => h("div", { class: "item" }, h("span", {}), h("span", { class: "path" }, s))))));
+  }
+  $("balance-body").replaceChildren(...body);
+  renderDriveBars();
   updateApproveBar();
 }
 
@@ -524,8 +710,11 @@ async function undo(b) {
     { ok: "Undo" });
   if (!ok) return;
   try {
-    const res = await api("POST", `/api/batch/${b.id}/undo`);
-    await dialog(`Batch #${b.id} undone`, resultBody(res, "Restored"), { ok: "Close", cancel: null });
+    const prev = await lastJobId();
+    await api("POST", `/api/batch/${b.id}/undo`);
+    const job = await waitForJob(prev);
+    if (job.error) throw new Error(job.error);
+    await dialog(`Batch #${b.id} undone`, resultBody(job.result, "Restored"), { ok: "Close", cancel: null });
   } catch (e) { showError(e); }
   loadHistory();
   refreshStatusOnce();
@@ -581,6 +770,7 @@ $("scan-btn").addEventListener("click", startScan);
 $("scan-cancel").addEventListener("click", () => api("POST", "/api/scan/cancel").catch(showError));
 $("build-cleanup").addEventListener("click", buildCleanup);
 $("build-sort").addEventListener("click", buildSort);
+$("build-balance").addEventListener("click", buildBalance);
 $("approve-btn").addEventListener("click", approve);
 $("rules-save").addEventListener("click", saveRules);
 refreshStatus();

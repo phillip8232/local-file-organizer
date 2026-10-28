@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/phillip8232/local-file-organizer/internal/analyze"
+	"github.com/phillip8232/local-file-organizer/internal/balance"
 	"github.com/phillip8232/local-file-organizer/internal/config"
 	"github.com/phillip8232/local-file-organizer/internal/executor"
 	"github.com/phillip8232/local-file-organizer/internal/fsutil"
@@ -42,11 +43,20 @@ type Server struct {
 	token string
 	addr  string
 
-	mu       sync.Mutex
-	busy     string // "", "scan" or "apply"
-	scanner  *index.Scanner
-	scanStop context.CancelFunc
-	lastErr  string
+	mu         sync.Mutex
+	busy       string // "", "scan", "apply", "undo" or "purge"
+	scanner    *index.Scanner
+	scanStop   context.CancelFunc
+	lastErr    string
+	lastResult *jobResult // the latest finished apply or undo
+}
+
+// jobResult is a finished background apply or undo, for the page to show.
+type jobResult struct {
+	Job    string           `json:"job"`
+	ID     int64            `json:"id"` // increases with every job
+	Result *executor.Result `json:"result,omitempty"`
+	Error  string           `json:"error,omitempty"`
 }
 
 func New(cfg *config.Config, db *index.DB, ex *executor.Executor) *Server {
@@ -98,6 +108,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/report", s.report)
 	mux.HandleFunc("POST /api/plan/cleanup", s.planCleanup)
 	mux.HandleFunc("POST /api/plan/sort", s.planSort)
+	mux.HandleFunc("POST /api/plan/balance", s.planBalance)
+	mux.HandleFunc("GET /api/drives", s.drives)
 	mux.HandleFunc("POST /api/plan/{id}/apply", s.apply)
 	mux.HandleFunc("GET /api/history", s.history)
 	mux.HandleFunc("GET /api/batch/{id}", s.batch)
@@ -194,8 +206,58 @@ func (s *Server) status(w http.ResponseWriter, _ *http.Request) {
 	if s.scanner != nil {
 		out["scan"] = s.scanner.Progress()
 	}
+	if s.busy == "apply" || s.busy == "undo" {
+		out["progress"] = s.ex.Progress()
+	}
+	if s.lastResult != nil {
+		out["lastResult"] = s.lastResult
+	}
 	s.mu.Unlock()
 	writeJSON(w, out)
+}
+
+// runJob runs an apply or undo in the background; the page follows its
+// progress through /api/status and shows lastResult when it's done.
+func (s *Server) runJob(job string, fn func() (*executor.Result, error)) {
+	go func() {
+		defer s.release()
+		res, err := fn()
+		jr := &jobResult{Job: job, Result: res}
+		if err != nil {
+			jr.Error = err.Error()
+		}
+		s.mu.Lock()
+		if s.lastResult != nil {
+			jr.ID = s.lastResult.ID + 1
+		} else {
+			jr.ID = 1
+		}
+		s.lastResult = jr
+		s.mu.Unlock()
+	}()
+}
+
+func (s *Server) drives(w http.ResponseWriter, _ *http.Request) {
+	vols, err := platform.Volumes()
+	if err != nil {
+		fail(w, 500, err)
+		return
+	}
+	writeJSON(w, map[string]any{"drives": vols})
+}
+
+func (s *Server) planBalance(w http.ResponseWriter, _ *http.Request) {
+	vols, err := platform.Volumes()
+	if err != nil {
+		fail(w, 500, err)
+		return
+	}
+	res := balance.Build(s.cfg, vols, time.Now())
+	if err := plan.Save(s.db, res.Plan); err != nil {
+		fail(w, 500, err)
+		return
+	}
+	writeJSON(w, res)
 }
 
 func (s *Server) startScan(w http.ResponseWriter, _ *http.Request) {
@@ -306,7 +368,6 @@ func (s *Server) apply(w http.ResponseWriter, r *http.Request) {
 		fail(w, 409, err)
 		return
 	}
-	defer s.release()
 	var moves, deletes int
 	for _, a := range actions {
 		if a.Op == plan.OpMove {
@@ -316,12 +377,10 @@ func (s *Server) apply(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	summary := fmt.Sprintf("%s plan %d: %d moves, %d deletes", p.Kind, p.ID, moves, deletes)
-	res, err := s.ex.Apply(context.Background(), p.ID, summary, actions)
-	if err != nil {
-		fail(w, 500, err)
-		return
-	}
-	writeJSON(w, res)
+	s.runJob("apply", func() (*executor.Result, error) {
+		return s.ex.Apply(context.Background(), p.ID, summary, actions)
+	})
+	writeJSON(w, map[string]bool{"started": true})
 }
 
 func (s *Server) history(w http.ResponseWriter, _ *http.Request) {
@@ -358,13 +417,8 @@ func (s *Server) undo(w http.ResponseWriter, r *http.Request) {
 		fail(w, 409, err)
 		return
 	}
-	defer s.release()
-	res, err := s.ex.Undo(id)
-	if err != nil {
-		fail(w, 500, err)
-		return
-	}
-	writeJSON(w, res)
+	s.runJob("undo", func() (*executor.Result, error) { return s.ex.Undo(id) })
+	writeJSON(w, map[string]bool{"started": true})
 }
 
 // purge sends held items to the OS trash. Permanent deletion is CLI-only.

@@ -19,10 +19,12 @@ import (
 	"time"
 
 	"github.com/phillip8232/local-file-organizer/internal/analyze"
+	"github.com/phillip8232/local-file-organizer/internal/balance"
 	"github.com/phillip8232/local-file-organizer/internal/config"
 	"github.com/phillip8232/local-file-organizer/internal/executor"
 	"github.com/phillip8232/local-file-organizer/internal/index"
 	"github.com/phillip8232/local-file-organizer/internal/plan"
+	"github.com/phillip8232/local-file-organizer/internal/platform"
 	"github.com/phillip8232/local-file-organizer/internal/rules"
 	"github.com/phillip8232/local-file-organizer/internal/server"
 	"github.com/phillip8232/local-file-organizer/internal/trash"
@@ -34,7 +36,8 @@ Usage:
   organizer ui [--port N] [--no-browser]   open the review page (recommended)
   organizer scan                           index the configured folders
   organizer report [--limit N] [--json]    show what the analyzers found
-  organizer plan cleanup|sort              build a plan to review
+  organizer plan cleanup|sort|balance      build a plan to review
+  organizer drives                         show drives and free space
   organizer apply <plan> [--include c,c] [--yes]
                                            carry out a plan's selected actions
   organizer history                        list past batches
@@ -55,28 +58,55 @@ func main() {
 }
 
 type app struct {
-	cfg *config.Config
-	db  *index.DB
-	ex  *executor.Executor
+	cfg    *config.Config
+	db     *index.DB
+	ex     *executor.Executor
+	unlock func()
 }
 
-func open(dataDir string) (*app, error) {
+// open loads settings and, when the command needs the database, takes the
+// data folder's lock and opens it. Only one organizer at a time may use a
+// data folder, so a scan and the review page can never write at once.
+func open(dataDir string, needDB bool) (*app, error) {
 	cfg, err := config.Load(dataDir)
 	if err != nil {
 		return nil, err
 	}
-	db, err := index.Open(filepath.Join(dataDir, "organizer.db"))
+	a := &app{cfg: cfg, unlock: func() {}}
+	if !needDB {
+		return a, nil
+	}
+	unlock, err := platform.Lock(filepath.Join(dataDir, "organizer.lock"))
+	if errors.Is(err, platform.ErrLocked) {
+		return nil, errors.New("organizer is already running with this data folder (probably the review page in another window).\n" +
+			"Use that window, or stop it with Ctrl+C and try again")
+	}
 	if err != nil {
 		return nil, err
 	}
-	ex, err := executor.New(db, cfg, trash.Move)
-	if err != nil {
+	a.unlock = unlock
+	if a.db, err = index.Open(filepath.Join(dataDir, "organizer.db")); err != nil {
+		unlock()
+		return nil, err
+	}
+	if a.db.Recovered != "" {
+		fmt.Fprintln(os.Stderr, "note:", a.db.Recovered)
+	}
+	if a.ex, err = executor.New(a.db, cfg, trash.Move); err != nil {
+		a.close()
 		return nil, err
 	}
 	if _, _, err := rules.Load(dataDir); err != nil {
 		fmt.Fprintln(os.Stderr, "warning:", err)
 	}
-	return &app{cfg: cfg, db: db, ex: ex}, nil
+	return a, nil
+}
+
+func (a *app) close() {
+	if a.db != nil {
+		a.db.Close()
+	}
+	a.unlock()
 }
 
 func run(args []string) error {
@@ -107,11 +137,12 @@ func run(args []string) error {
 		fmt.Printf(usage, dataDir)
 		return nil
 	}
-	a, err := open(dataDir)
+	needDB := cmd != "rules" && cmd != "drives" && cmd != "where"
+	a, err := open(dataDir, needDB)
 	if err != nil {
 		return err
 	}
-	defer a.db.Close()
+	defer a.close()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	switch cmd {
@@ -133,6 +164,8 @@ func run(args []string) error {
 		return a.purge(args)
 	case "rules":
 		return a.rules()
+	case "drives":
+		return a.drives()
 	case "where":
 		return a.where()
 	case "ui":
@@ -245,17 +278,18 @@ func (a *app) report(args []string) error {
 }
 
 func (a *app) plan(args []string) error {
-	if len(args) != 1 || (args[0] != "cleanup" && args[0] != "sort") {
-		return errors.New("usage: organizer plan cleanup|sort")
+	if len(args) != 1 || (args[0] != "cleanup" && args[0] != "sort" && args[0] != "balance") {
+		return errors.New("usage: organizer plan cleanup|sort|balance")
 	}
 	var p *plan.Plan
-	if args[0] == "cleanup" {
+	switch args[0] {
+	case "cleanup":
 		r, err := analyze.Analyze(a.db, a.cfg)
 		if err != nil {
 			return err
 		}
 		p = plan.Cleanup(r)
-	} else {
+	case "sort":
 		rf, _, err := rules.Load(a.cfg.DataDir)
 		if err != nil {
 			return err
@@ -263,6 +297,20 @@ func (a *app) plan(args []string) error {
 		if p, err = rules.Plan(a.db, a.cfg, rf); err != nil {
 			return err
 		}
+	case "balance":
+		vols, err := platform.Volumes()
+		if err != nil {
+			return err
+		}
+		res := balance.Build(a.cfg, vols, time.Now())
+		for _, d := range res.Drives {
+			fmt.Printf("  %-4s %3.0f%% used → %3.0f%% after the ticked moves (equal share %3.0f%%)\n", d.Root,
+				pct(d.Used(), d.Total), pct(d.Planned, d.Total), pct(d.Target, d.Total))
+		}
+		if res.Note != "" {
+			fmt.Println("  " + res.Note)
+		}
+		p = res.Plan
 	}
 	if err := plan.Save(a.db, p); err != nil {
 		return err
@@ -308,13 +356,17 @@ func printPlan(p *plan.Plan) {
 		}
 		fmt.Printf("  %-14s %6d items  %9s  (%s)\n", c, x.n, human(x.bytes), note)
 	}
-	if p.Kind == "sort" {
+	if p.Kind == "sort" || p.Kind == "balance" {
 		for i, x := range p.Actions {
 			if i == 15 {
-				fmt.Printf("  … %d more moves\n", len(p.Actions)-i)
+				fmt.Printf("  … %d more\n", len(p.Actions)-i)
 				break
 			}
-			fmt.Printf("    %s\n      → %s\n", x.Src, x.Dst)
+			mark := " "
+			if !x.Selected {
+				mark = "?" // offered, not selected
+			}
+			fmt.Printf("  %s %s  [%s]\n      → %s\n", mark, x.Src, x.Reason, x.Dst)
 		}
 	}
 	if len(p.Actions) == 0 && len(p.Groups) == 0 {
@@ -380,7 +432,7 @@ func (a *app) apply(ctx context.Context, args []string) error {
 		return nil
 	}
 	summary := fmt.Sprintf("%s plan %d: %d moves, %d deletes", p.Kind, p.ID, moves, deletes)
-	res, err := a.ex.Apply(ctx, p.ID, summary, actions)
+	res, err := withProgress(a.ex, func() (*executor.Result, error) { return a.ex.Apply(ctx, p.ID, summary, actions) })
 	if err != nil {
 		return err
 	}
@@ -443,12 +495,64 @@ func (a *app) undo(args []string) error {
 	if err != nil {
 		return err
 	}
-	res, err := a.ex.Undo(id)
+	res, err := withProgress(a.ex, func() (*executor.Result, error) { return a.ex.Undo(id) })
 	if err != nil {
 		return err
 	}
 	printResult(res)
 	return nil
+}
+
+// withProgress runs fn, printing a progress line while it works (copies
+// between drives can take minutes).
+func withProgress(ex *executor.Executor, fn func() (*executor.Result, error)) (*executor.Result, error) {
+	type out struct {
+		r   *executor.Result
+		err error
+	}
+	done := make(chan out, 1)
+	go func() {
+		r, err := fn()
+		done <- out{r, err}
+	}()
+	t := time.NewTicker(time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case o := <-done:
+			fmt.Fprintf(os.Stderr, "\r%-100s\r", "")
+			return o.r, o.err
+		case <-t.C:
+			p := ex.Progress()
+			line := fmt.Sprintf("%d of %d items", p.ItemsDone, p.Items)
+			if p.Bytes > 0 {
+				line += fmt.Sprintf(", %s of %s copied", human(p.BytesDone), human(p.Bytes))
+			}
+			fmt.Fprintf(os.Stderr, "\r%-100s", line)
+		}
+	}
+}
+
+func (a *app) drives() error {
+	vols, err := platform.Volumes()
+	if err != nil {
+		return err
+	}
+	for _, v := range vols {
+		label := v.Label
+		if v.System {
+			label += " (system)"
+		}
+		fmt.Printf("%-4s %-22s %9s of %9s used (%3.0f%%), %9s free\n", v.Root, label, human(v.Used()), human(v.Total), pct(v.Used(), v.Total), human(v.Free))
+	}
+	return nil
+}
+
+func pct(n, total int64) float64 {
+	if total == 0 {
+		return 0
+	}
+	return 100 * float64(n) / float64(total)
 }
 
 func (a *app) purge(args []string) error {

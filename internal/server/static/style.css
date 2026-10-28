@@ -130,6 +130,21 @@ details.section[open] > summary::before { transform: rotate(90deg); }
   padding: 12px 24px; background: var(--surface); border-top: 1px solid var(--border);
 }
 
+.drives { display: grid; gap: 10px; margin-bottom: 18px; }
+.drive { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; }
+.drive-head { display: flex; justify-content: space-between; gap: 12px; font-size: 14px; margin-bottom: 8px; flex-wrap: wrap; }
+.drive-head .muted { font-variant-numeric: tabular-nums; }
+.drive-bar { position: relative; height: 10px; background: var(--surface-2); border-radius: 5px; overflow: hidden; }
+.drive-bar .now { position: absolute; inset: 0 auto 0 0; background: var(--muted); opacity: .45; }
+.drive-bar .after { position: absolute; inset: 0 auto 0 0; background: var(--accent); }
+.drive-bar .target { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--text); }
+.legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); margin-top: 6px; flex-wrap: wrap; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+.legend .l-now { background: var(--muted); opacity: .45; }
+.legend .l-after { background: var(--accent); }
+.legend .l-target { background: var(--text); width: 2px; }
+.note { margin: 0 0 14px; padding: 10px 14px; border-radius: var(--radius); background: var(--warn-soft); color: var(--warn); font-size: 14px; }
+.item .new-name { color: var(--accent); }
 .holding { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; margin-bottom: 16px; }
 .holding p { margin: 0 0 10px; }
 .batch { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 10px; }

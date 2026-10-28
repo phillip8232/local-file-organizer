@@ -85,6 +85,8 @@ func IsIgnorableFile(name string) bool { return ignorable[strings.ToLower(name)]
 var projectDirMarkers = map[string]bool{
 	".git": true, ".hg": true, ".svn": true, ".claude": true, ".idea": true,
 	".vscode": true, "node_modules": true, ".venv": true,
+	// App-managed libraries: moving part of one breaks the app.
+	".obsidian": true, "steamapps": true, ".dropbox.cache": true,
 }
 
 var projectFileMarkers = map[string]bool{
@@ -95,7 +97,12 @@ var projectFileMarkers = map[string]bool{
 	"pubspec.yaml": true, "mix.exs": true, "deno.json": true, "claude.md": true,
 }
 
-var projectExtMarkers = map[string]bool{".sln": true, ".csproj": true, ".xcodeproj": true, ".uproject": true}
+var projectExtMarkers = map[string]bool{
+	".sln": true, ".csproj": true, ".xcodeproj": true, ".uproject": true,
+	// Media projects and libraries that reference files by path.
+	".prproj": true, ".aep": true, ".drp": true, ".kdenlive": true, ".veg": true, ".blend": true,
+	".lrcat": true, ".photoslibrary": true, ".fcpbundle": true, ".logicx": true, ".band": true,
+}
 
 // IsProjectMarker reports whether an entry with this name marks its parent
 // folder as a project.
