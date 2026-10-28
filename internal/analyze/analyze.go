@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"organizer/internal/config"
-	"organizer/internal/fsutil"
-	"organizer/internal/index"
-	"organizer/internal/platform"
+	"github.com/phillip8232/local-file-organizer/internal/config"
+	"github.com/phillip8232/local-file-organizer/internal/fsutil"
+	"github.com/phillip8232/local-file-organizer/internal/index"
+	"github.com/phillip8232/local-file-organizer/internal/platform"
 )
 
 // File is one indexed file as the analyzers and UI see it.

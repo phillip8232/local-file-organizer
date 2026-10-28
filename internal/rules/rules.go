@@ -16,10 +16,10 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"organizer/internal/config"
-	"organizer/internal/fsutil"
-	"organizer/internal/index"
-	"organizer/internal/plan"
+	"github.com/phillip8232/local-file-organizer/internal/config"
+	"github.com/phillip8232/local-file-organizer/internal/fsutil"
+	"github.com/phillip8232/local-file-organizer/internal/index"
+	"github.com/phillip8232/local-file-organizer/internal/plan"
 )
 
 // File is rules.yaml.

@@ -8,12 +8,12 @@ import (
 	"testing"
 	"time"
 
-	"organizer/internal/analyze"
-	"organizer/internal/config"
-	"organizer/internal/executor"
-	"organizer/internal/index"
-	"organizer/internal/plan"
-	"organizer/internal/rules"
+	"github.com/phillip8232/local-file-organizer/internal/analyze"
+	"github.com/phillip8232/local-file-organizer/internal/config"
+	"github.com/phillip8232/local-file-organizer/internal/executor"
+	"github.com/phillip8232/local-file-organizer/internal/index"
+	"github.com/phillip8232/local-file-organizer/internal/plan"
+	"github.com/phillip8232/local-file-organizer/internal/rules"
 )
 
 type env struct {

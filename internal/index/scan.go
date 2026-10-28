@@ -12,10 +12,10 @@ import (
 
 	"github.com/charlievieth/fastwalk"
 
-	"organizer/internal/config"
-	"organizer/internal/fsutil"
-	"organizer/internal/hashing"
-	"organizer/internal/platform"
+	"github.com/phillip8232/local-file-organizer/internal/config"
+	"github.com/phillip8232/local-file-organizer/internal/fsutil"
+	"github.com/phillip8232/local-file-organizer/internal/hashing"
+	"github.com/phillip8232/local-file-organizer/internal/platform"
 )
 
 // Progress is a snapshot of a running or finished scan.

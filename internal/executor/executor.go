@@ -18,12 +18,12 @@ import (
 	"sync"
 	"time"
 
-	"organizer/internal/config"
-	"organizer/internal/fsutil"
-	"organizer/internal/hashing"
-	"organizer/internal/index"
-	"organizer/internal/plan"
-	"organizer/internal/platform"
+	"github.com/phillip8232/local-file-organizer/internal/config"
+	"github.com/phillip8232/local-file-organizer/internal/fsutil"
+	"github.com/phillip8232/local-file-organizer/internal/hashing"
+	"github.com/phillip8232/local-file-organizer/internal/index"
+	"github.com/phillip8232/local-file-organizer/internal/plan"
+	"github.com/phillip8232/local-file-organizer/internal/platform"
 )
 
 // HoldingDirName is the per-volume holding folder used when a file can't be

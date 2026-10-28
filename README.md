@@ -13,6 +13,16 @@ It runs on Windows, macOS and Linux from one Go codebase with no cloud and no ac
   `.claude`, `default.project.json`, …), system and app folders, symlinks, and
   cloud/online-only files (OneDrive, iCloud) are never moved, deleted or read.
 
+## Install
+
+With Go 1.27 or newer:
+
+```
+go install github.com/phillip8232/local-file-organizer/cmd/organizer@latest
+```
+
+Or build from source (see Build below).
+
 ## Use
 
 ```
@@ -64,3 +74,7 @@ Finder, and the first purge asks for permission to control Finder.
 - Watching folders for new files (fsnotify)
 - Moving files between drives (refused with a clear message)
 - Similar-image detection
+
+## License
+
+MIT. See [LICENSE](LICENSE).

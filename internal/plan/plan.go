@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"time"
 
-	"organizer/internal/analyze"
-	"organizer/internal/fsutil"
-	"organizer/internal/index"
+	"github.com/phillip8232/local-file-organizer/internal/analyze"
+	"github.com/phillip8232/local-file-organizer/internal/fsutil"
+	"github.com/phillip8232/local-file-organizer/internal/index"
 )
 
 // Op values.

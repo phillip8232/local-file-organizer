@@ -13,7 +13,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"organizer/internal/fsutil"
+	"github.com/phillip8232/local-file-organizer/internal/fsutil"
 )
 
 // Config is config.yaml plus the paths resolved from it.
